@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Docker 架構：Jenkins Container 如何透過 docker.sock 操作 Host Docker | Annie 的筆記</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="學習日期：2026-07-01主題：Docker CLI、Docker daemon、Unix socket，以及 Jenkins Container 與 Host Docker 的關係  學習目標 理解 Docker CLI 與 Docker daemon 的分工。 理解 Host Docker、docker.sock 與 Unix socket。 理解 Jenkins Container 如">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Docker 架構：Jenkins Container 如何透過 docker.sock 操作 Host Docker">
+<meta property="og:url" content="https://suluann.github.io/2026/07/01/docker-architecture-jenkins-docker-sock/index.html">
+<meta property="og:site_name" content="Annie 的筆記">
+<meta property="og:description" content="學習日期：2026-07-01主題：Docker CLI、Docker daemon、Unix socket，以及 Jenkins Container 與 Host Docker 的關係  學習目標 理解 Docker CLI 與 Docker daemon 的分工。 理解 Host Docker、docker.sock 與 Unix socket。 理解 Jenkins Container 如">
+<meta property="og:locale" content="zh_TW">
+<meta property="article:published_time" content="2026-06-30T16:00:00.000Z">
+<meta property="article:modified_time" content="2026-07-16T03:35:06.502Z">
+<meta property="article:author" content="Annie">
+<meta property="article:tag" content="Docker">
+<meta property="article:tag" content="Jenkins">
+<meta name="twitter:card" content="summary">
+  
+    <link rel="alternate" href="/atom.xml" title="Annie 的筆記" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+  
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fork-awesome@1.2.0/css/fork-awesome.min.css">
+
+<meta name="generator" content="Hexo 8.1.1"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">Annie 的筆記</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap">
+          <a href="/" id="subtitle">記錄程式與生活</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"><span class="fa fa-bars"></span></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+        
+          <a class="nav-icon" href="/atom.xml" title="RSS Feed"><span class="fa fa-rss"></span></a>
+        
+        <a class="nav-icon nav-search-btn" title="搜尋"><span class="fa fa-search"></span></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="搜尋"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://suluann.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-docker-architecture-jenkins-docker-sock" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/07/01/docker-architecture-jenkins-docker-sock/" class="article-date">
+  <time class="dt-published" datetime="2026-06-30T16:00:00.000Z" itemprop="datePublished">2026-07-01</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/DevOps/">DevOps</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Docker 架構：Jenkins Container 如何透過 docker.sock 操作 Host Docker
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <blockquote>
+<p>學習日期：2026-07-01<br>主題：Docker CLI、Docker daemon、Unix socket，以及 Jenkins Container 與 Host Docker 的關係</p>
+</blockquote>
+<h2 id="學習目標"><a href="#學習目標" class="headerlink" title="學習目標"></a>學習目標</h2><ul>
+<li>理解 Docker CLI 與 Docker daemon 的分工。</li>
+<li>理解 Host Docker、<code>docker.sock</code> 與 Unix socket。</li>
+<li>理解 Jenkins Container 如何操作 Host Docker。</li>
+<li>理解 bind mount 為什麼要從 Docker Host 的視角看路徑。</li>
+</ul>
+<span id="more"></span>
+
+<h2 id="Docker-的基本架構"><a href="#Docker-的基本架構" class="headerlink" title="Docker 的基本架構"></a>Docker 的基本架構</h2><p>執行 <code>docker run nginx</code> 時，真正的流程是：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line">使用者</span><br><span class="line">  │ docker run nginx</span><br><span class="line">  ▼</span><br><span class="line">Docker CLI</span><br><span class="line">  │ Docker API</span><br><span class="line">  ▼</span><br><span class="line">Docker daemon（dockerd）</span><br><span class="line">  ├─ 管理 Image</span><br><span class="line">  ├─ 建立 Container</span><br><span class="line">  ├─ 建立 Network</span><br><span class="line">  └─ 掛載 Volume</span><br><span class="line">        │</span><br><span class="line">        ▼</span><br><span class="line">Linux Kernel</span><br></pre></td></tr></table></figure>
+
+<table>
+<thead>
+<tr>
+<th>Docker 元件</th>
+<th>餐廳類比</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Docker CLI</td>
+<td>點餐櫃台</td>
+</tr>
+<tr>
+<td>Docker API</td>
+<td>訂單格式</td>
+</tr>
+<tr>
+<td>Docker daemon</td>
+<td>廚房</td>
+</tr>
+<tr>
+<td>Image</td>
+<td>食譜</td>
+</tr>
+<tr>
+<td>Container</td>
+<td>按照食譜製作的餐點</td>
+</tr>
+<tr>
+<td>Host</td>
+<td>餐廳所在的建築物</td>
+</tr>
+<tr>
+<td><code>docker.sock</code></td>
+<td>櫃台傳送訂單到廚房的窗口</td>
+</tr>
+</tbody></table>
+<h2 id="Host-Docker-是什麼？"><a href="#Host-Docker-是什麼？" class="headerlink" title="Host Docker 是什麼？"></a>Host Docker 是什麼？</h2><p>Host 是實際執行 Container 的機器，可能是實體 Linux Server、Linux VM、EC2，或 Docker Desktop 背後的 Linux VM。</p>
+<p>Host Docker 通常是指運行在 Host 上的 Docker daemon，以及由它管理的 Docker 環境。</p>
+<p>以下是一個通用的 Jenkins 架構範例：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">             Docker Host</span><br><span class="line">                  │</span><br><span class="line">          Docker daemon</span><br><span class="line">          ┌───────┴────────┐</span><br><span class="line">          ▼                ▼</span><br><span class="line">Jenkins Container    worker Container</span><br></pre></td></tr></table></figure>
+
+<p><code>worker Container</code> 雖然由 Jenkins 下指令建立，卻不是建立在 Jenkins Container 裡。兩者都是 Host Docker daemon 管理的兄弟 Container。</p>
+<p>這種模式稱為 <strong>Docker-outside-of-Docker</strong>，不是 Docker-in-Docker。</p>
+<h2 id="Docker-daemon-是什麼？"><a href="#Docker-daemon-是什麼？" class="headerlink" title="Docker daemon 是什麼？"></a>Docker daemon 是什麼？</h2><p>Daemon 是長時間在背景運行並等待請求的程式。Docker daemon 通常叫做 <code>dockerd</code>，負責：</p>
+<ul>
+<li>下載與管理 Image</li>
+<li>建立、啟動及停止 Container</li>
+<li>管理 Network 與 Volume</li>
+<li>處理 bind mount</li>
+<li>接收 Docker CLI 傳來的 API 請求</li>
+</ul>
+<p><code>docker ps</code> 並不是 Docker CLI 自己尋找 Container，而是 CLI 詢問 daemon，再顯示 daemon 的回應。</p>
+<p>核心觀念：</p>
+<blockquote>
+<p>Docker CLI 負責下指令，Docker daemon 才是真正執行工作的人。</p>
+</blockquote>
+<h2 id="docker-sock-是什麼？"><a href="#docker-sock-是什麼？" class="headerlink" title="docker.sock 是什麼？"></a>docker.sock 是什麼？</h2><p><code>docker.sock</code> 通常位於：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">/var/run/docker.sock</span><br></pre></td></tr></table></figure>
+
+<p>它是 Docker daemon 提供給本機程式使用的通訊入口：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">Docker CLI</span><br><span class="line">    │ /var/run/docker.sock</span><br><span class="line">    ▼</span><br><span class="line">Docker daemon</span><br></pre></td></tr></table></figure>
+
+<p>Jenkins Compose 中的設定：</p>
+<figure class="highlight yaml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="attr">volumes:</span></span><br><span class="line">  <span class="bullet">-</span> <span class="string">/var/run/docker.sock:/var/run/docker.sock</span></span><br></pre></td></tr></table></figure>
+
+<p>代表把 Host 的 Docker socket 掛載進 Jenkins Container。因此 Jenkins Container 裡的 Docker CLI，可以直接向 Host Docker daemon 下指令。</p>
+<h2 id="Unix-socket-是什麼？"><a href="#Unix-socket-是什麼？" class="headerlink" title="Unix socket 是什麼？"></a>Unix socket 是什麼？</h2><p>Unix socket 是同一台 Unix&#x2F;Linux 機器上，兩個 Process 互相通訊的一種方式。</p>
+<table>
+<thead>
+<tr>
+<th>通訊方式</th>
+<th>位址範例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TCP socket</td>
+<td><code>127.0.0.1:2375</code></td>
+</tr>
+<tr>
+<td>Unix socket</td>
+<td><code>/var/run/docker.sock</code></td>
+</tr>
+</tbody></table>
+<p><code>docker.sock</code> 看起來像檔案，但它不是一般資料檔案，而是通訊端點：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">Docker CLI 寫入請求</span><br><span class="line">        ↓</span><br><span class="line">docker.sock</span><br><span class="line">        ↓</span><br><span class="line">Docker daemon 接收請求並回應</span><br></pre></td></tr></table></figure>
+
+<p>使用 <code>ls -l /var/run/docker.sock</code> 可能會看到：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">srw-rw---- 1 root docker ... /var/run/docker.sock</span><br></pre></td></tr></table></figure>
+
+<p>最前面的 <code>s</code> 表示這是一個 socket。</p>
+<h2 id="Jenkins-執行-Docker-指令的完整流程"><a href="#Jenkins-執行-Docker-指令的完整流程" class="headerlink" title="Jenkins 執行 Docker 指令的完整流程"></a>Jenkins 執行 Docker 指令的完整流程</h2><figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">Docker Host</span><br><span class="line">│</span><br><span class="line">├─ Docker daemon</span><br><span class="line">│       ▲</span><br><span class="line">│       │ /var/run/docker.sock</span><br><span class="line">│       │</span><br><span class="line">└─ Jenkins Container</span><br><span class="line">        └─ Docker CLI</span><br><span class="line">             docker compose up</span><br></pre></td></tr></table></figure>
+
+<ol>
+<li>Jenkins Container 裡的 Docker CLI 讀取 Compose 設定。</li>
+<li>CLI 透過 <code>docker.sock</code> 將請求送給 Host Docker daemon。</li>
+<li>daemon 在 Host Docker 環境建立 <code>worker Container</code>。</li>
+<li>daemon 設定 Network、Volume 與 bind mount。</li>
+<li>daemon 啟動 Container 裡的 Process。</li>
+</ol>
+<p>因此：</p>
+<blockquote>
+<p>指令從 Jenkins Container 發出，但真正建立 Container 的是 Host Docker daemon。</p>
+</blockquote>
+<h2 id="為什麼路徑視角很重要？"><a href="#為什麼路徑視角很重要？" class="headerlink" title="為什麼路徑視角很重要？"></a>為什麼路徑視角很重要？</h2><p>同一份 Jenkins 資料可能有兩種路徑：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">Jenkins Container：</span><br><span class="line">/var/jenkins_home/workspace/example-job</span><br><span class="line"></span><br><span class="line">Docker Host：</span><br><span class="line">/srv/jenkins-data/workspace/example-job</span><br></pre></td></tr></table></figure>
+
+<p>下面 bind mount 左側的來源路徑，由 Docker daemon 所在的 Host 解析：</p>
+<figure class="highlight yaml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="attr">volumes:</span></span><br><span class="line">  <span class="bullet">-</span> <span class="string">/var/jenkins_home/workspace/example-job:/workspace</span></span><br></pre></td></tr></table></figure>
+
+<p>Docker daemon 會在 Host 尋找 <code>/var/jenkins_home/workspace/example-job</code>，不會進入 Jenkins Container 尋找它。</p>
+<p>核心規則：</p>
+<blockquote>
+<p>Bind mount 的來源路徑由 Docker daemon 所在的機器解析。</p>
+</blockquote>
+<h2 id="為什麼-docker-cp-可以解決路徑問題？"><a href="#為什麼-docker-cp-可以解決路徑問題？" class="headerlink" title="為什麼 docker cp 可以解決路徑問題？"></a>為什麼 docker cp 可以解決路徑問題？</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker <span class="built_in">cp</span> container-id:/output/report.csv <span class="string">&quot;<span class="variable">$WORKSPACE</span>/report.csv&quot;</span></span><br></pre></td></tr></table></figure>
+
+<p>流程是：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">worker Container</span><br><span class="line">  → Docker daemon 讀取檔案</span><br><span class="line">  → 透過 docker.sock 傳給 Docker CLI</span><br><span class="line">  → Docker CLI 寫入 Jenkins 的 $WORKSPACE</span><br></pre></td></tr></table></figure>
+
+<p>來源由 Docker daemon 從 Container 讀取，目的地由 Jenkins Container 裡的 CLI 寫入，因此不需要知道 Workspace 在 Host 上的實際路徑。</p>
+<h2 id="安全性提醒"><a href="#安全性提醒" class="headerlink" title="安全性提醒"></a>安全性提醒</h2><p>能存取 <code>/var/run/docker.sock</code>，通常就接近擁有整台 Docker Host 的高權限，因為它可以：</p>
+<ul>
+<li>啟動或刪除其他 Container</li>
+<li>掛載 Host 目錄</li>
+<li>建立高權限 Container</li>
+<li>存取其他 Container 的部分資源</li>
+</ul>
+<p>因此 Jenkins Pipeline 與使用者權限必須受到嚴格管理。</p>
+<h2 id="重點整理"><a href="#重點整理" class="headerlink" title="重點整理"></a>重點整理</h2><ol>
+<li>Docker CLI 只負責傳送指令。</li>
+<li>Docker daemon 負責建立及管理 Container。</li>
+<li><code>docker.sock</code> 是 CLI 與本機 daemon 的通訊入口。</li>
+<li>Unix socket 使用檔案路徑作為同機 Process 的通訊端點。</li>
+<li>Jenkins 透過掛載 Host 的 <code>docker.sock</code> 操作 Host Docker。</li>
+<li>Jenkins 與它啟動的工作 Container 是兄弟關係。</li>
+<li>Bind mount 來源路徑必須從 Docker daemon 所在 Host 的視角理解。</li>
+<li><code>docker cp</code> 可以避免依賴 Jenkins Workspace 在 Host 上的實體路徑。</li>
+</ol>
+<h2 id="自我檢查"><a href="#自我檢查" class="headerlink" title="自我檢查"></a>自我檢查</h2><h3 id="Docker-CLI-會直接建立-Container-嗎？"><a href="#Docker-CLI-會直接建立-Container-嗎？" class="headerlink" title="Docker CLI 會直接建立 Container 嗎？"></a>Docker CLI 會直接建立 Container 嗎？</h3><p>不會。CLI 會透過 Docker API 將請求送給 daemon，由 daemon 建立 Container。</p>
+<h3 id="Jenkins-Container-為什麼能執行-docker-ps？"><a href="#Jenkins-Container-為什麼能執行-docker-ps？" class="headerlink" title="Jenkins Container 為什麼能執行 docker ps？"></a>Jenkins Container 為什麼能執行 <code>docker ps</code>？</h3><p>因為 Host 的 <code>docker.sock</code> 被掛載進 Jenkins Container，讓裡面的 CLI 可以與 Host daemon 溝通。</p>
+<h3 id="Jenkins-建立的工作-Container-是-Jenkins-Container-的子-Container-嗎？"><a href="#Jenkins-建立的工作-Container-是-Jenkins-Container-的子-Container-嗎？" class="headerlink" title="Jenkins 建立的工作 Container 是 Jenkins Container 的子 Container 嗎？"></a>Jenkins 建立的工作 Container 是 Jenkins Container 的子 Container 嗎？</h3><p>不是。它們都是 Host Docker daemon 管理的兄弟 Container。</p>
+<h3 id="Bind-mount-左側的路徑由誰解析？"><a href="#Bind-mount-左側的路徑由誰解析？" class="headerlink" title="Bind mount 左側的路徑由誰解析？"></a>Bind mount 左側的路徑由誰解析？</h3><p>由 Docker daemon 所在的 Host 解析。</p>
+<h3 id="為什麼改用-docker-cp？"><a href="#為什麼改用-docker-cp？" class="headerlink" title="為什麼改用 docker cp？"></a>為什麼改用 <code>docker cp</code>？</h3><p>它能從 Container 取出檔案，再由 Jenkins Container 裡的 CLI 寫入 <code>$WORKSPACE</code>，不需要知道 Workspace 在 Host 上的實際路徑。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://suluann.github.io/2026/07/01/docker-architecture-jenkins-docker-sock/" data-id="cuidZ2ZmVbtcU3dOTTWNy7-22" data-title="Docker 架構：Jenkins Container 如何透過 docker.sock 操作 Host Docker" class="article-share-link"><span class="fa fa-share">Share</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Docker/" rel="tag">Docker</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Jenkins/" rel="tag">Jenkins</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+    <a href="/2026/07/02/Groovy-%E5%9F%BA%E7%A4%8E%E8%AA%9E%E6%B3%95/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Groovy 基礎語法
+        
+      </div>
+    </a>
+  
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分類</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/DevOps/">DevOps</a></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%A8%8B%E5%BC%8F%E8%AA%9E%E8%A8%80/">程式語言</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">標籤</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/Docker/" rel="tag">Docker</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Groovy/" rel="tag">Groovy</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Jenkins/" rel="tag">Jenkins</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">標籤雲</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Docker/" style="font-size: 10px;">Docker</a> <a href="/tags/Groovy/" style="font-size: 10px;">Groovy</a> <a href="/tags/Jenkins/" style="font-size: 20px;">Jenkins</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">彙整</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/07/">七月 2026</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">最新文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/07/02/Groovy-%E5%9F%BA%E7%A4%8E%E8%AA%9E%E6%B3%95/">Groovy 基礎語法</a>
+          </li>
+        
+          <li>
+            <a href="/2026/07/01/docker-architecture-jenkins-docker-sock/">Docker 架構：Jenkins Container 如何透過 docker.sock 操作 Host Docker</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2026 Annie<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.6.4.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
